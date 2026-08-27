@@ -64,7 +64,47 @@ jobs:
             echo "::error::Set the AWS_DEPLOY_ROLE_ARN repository variable to the Terraform github_actions_deploy_role_arn output."
             exit 1
           fi
+      - name: Show actual OIDC claims
+        shell: bash
+        env:
+          EXPECTED_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          echo "Role requested by workflow: ${EXPECTED_ROLE_ARN}"
 
+          response="$(curl --fail-with-body --silent --show-error \
+            --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")"
+
+          token="$(jq -r '.value' <<<"${response}")"
+
+          OIDC_TOKEN="${token}" python3 - <<'PY'
+          import base64
+          import json
+          import os
+
+          token = os.environ["OIDC_TOKEN"]
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          safe_claims = {
+              key: claims.get(key)
+              for key in (
+                  "iss",
+                  "aud",
+                  "sub",
+                  "repository",
+                  "repository_id",
+                  "repository_owner",
+                  "repository_owner_id",
+                  "ref",
+                  "environment",
+                  "job_workflow_ref",
+              )
+          }
+
+          print(json.dumps(safe_claims, indent=2))
+          PY
       - name: Obtain short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -130,6 +170,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          etry-max-attempts: 1
 
       - uses: azure/setup-kubectl@v5
         with:
