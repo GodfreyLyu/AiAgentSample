@@ -12,6 +12,7 @@ app/
   api/routes/     Versioned agent and health endpoints
   core/           Environment configuration and observability
   main.py         FastAPI application factory
+deploy/            Kustomize base and Minikube/EKS overlays
 tests/            API, configuration, and workspace boundary tests
 Dockerfile        Non-root container image for deployment
 ```
@@ -93,9 +94,13 @@ Provide secrets through AWS Secrets Manager or Kubernetes Secrets, run with a re
 filesystem, disable service-account token mounting unless it is required, and apply a network
 policy appropriate for the model endpoint.
 
+The repository includes a hardened Kustomize base plus Minikube and EKS overlays. The EKS
+overlay uses an ALB Ingress and External Secrets Operator, while GitHub Actions tests the
+service, builds an immutable ECR image, and performs a verified rolling deployment with AWS
+OIDC credentials. See the [Kubernetes deployment guide](deploy/README.md) for details.
+
 The current conversation store is in memory. It is suitable for local development and a
 single replica. Before scaling across EKS replicas, implement the existing session-store
 boundary with a shared backend such as ElastiCache for Redis. The coding workspace is also
 pod-local; use an isolated ephemeral volume per workload and do not mount infrastructure
 credentials into a pod that has command execution enabled.
-

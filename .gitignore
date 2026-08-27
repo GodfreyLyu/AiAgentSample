@@ -1,4 +1,5 @@
 .env
+deploy/overlays/*/secrets.env
 .idea/
 .pytest_cache/
 .ruff_cache/
@@ -10,4 +11,3 @@ build/
 dist/
 workspace/*
 !workspace/.gitkeep
-

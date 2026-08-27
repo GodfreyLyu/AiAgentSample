@@ -1,13 +1,14 @@
 .env
 .git
 .gitignore
+.github
 .idea
 .pytest_cache
 .ruff_cache
 .venv
 __pycache__
 *.py[cod]
+deploy
 tests
 test_main.http
 workspace
-

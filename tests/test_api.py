@@ -68,6 +68,7 @@ def test_health_and_chat_endpoints(tmp_path) -> None:
 def test_chat_rejects_blank_message(tmp_path) -> None:
     settings = Settings(
         deepseek_api_key=SecretStr("test-key"),
+        api_bearer_token=None,
         agent_workspace_root=tmp_path,
         environment="test",
     )
@@ -78,4 +79,3 @@ def test_chat_rejects_blank_message(tmp_path) -> None:
         response = client.post("/api/v1/agent/chat", json={"message": "   "})
 
     assert response.status_code == 422
-

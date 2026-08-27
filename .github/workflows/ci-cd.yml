@@ -1,0 +1,157 @@
+name: Test, publish, and deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: ai-agent-sample
+  EKS_CLUSTER_NAME: eks-workshop
+  KUBERNETES_NAMESPACE: ai-agent-sample
+
+jobs:
+  quality:
+    name: Test and lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install application and development dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest
+
+      - name: Verify the container image builds
+        if: github.event_name == 'pull_request'
+        run: docker build --platform linux/amd64 --tag ai-agent-sample:ci .
+
+  build-and-push-ecr:
+    name: Build and push an image to ECR
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.image.outputs.uri }}
+      digest: ${{ steps.push.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate AWS publishing configuration
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [[ -z "$AWS_ROLE_ARN" ]]; then
+            echo "::error::Set the AWS_DEPLOY_ROLE_ARN repository variable to the Terraform github_actions_deploy_role_arn output."
+            exit 1
+          fi
+
+      - name: Obtain short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Create an immutable image reference
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE_TAG="sha-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "uri=${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.uri }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Publish image details
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### ECR image"
+            echo
+            echo "- URI: \`${IMAGE_URI}\`"
+            echo "- Digest: \`${IMAGE_DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy the published image to EKS
+    needs: build-and-push-ecr
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Obtain short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: azure/setup-kubectl@v5
+        with:
+          version: v1.35.0
+
+      - name: Configure Kubernetes access
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: Deploy and verify rollout
+        env:
+          IMAGE: ${{ needs.build-and-push-ecr.outputs.image }}
+        run: |
+          IMAGE_NAME="${IMAGE%:*}"
+          IMAGE_TAG="${IMAGE##*:}"
+          sed -i "s|newName: .*|newName: ${IMAGE_NAME}|" deploy/overlays/eks/kustomization.yaml
+          sed -i "s|newTag: .*|newTag: ${IMAGE_TAG}|" deploy/overlays/eks/kustomization.yaml
+          kubectl apply -k deploy/overlays/eks
+          kubectl wait externalsecret/ai-agent-sample-secrets \
+            --for=condition=Ready \
+            --timeout=120s \
+            --namespace "$KUBERNETES_NAMESPACE"
+          kubectl rollout status deployment/ai-agent-sample \
+            --timeout=300s \
+            --namespace "$KUBERNETES_NAMESPACE"
+          kubectl get ingress ai-agent-sample --namespace "$KUBERNETES_NAMESPACE"

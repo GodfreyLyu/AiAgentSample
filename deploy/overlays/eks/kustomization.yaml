@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ai-agent-sample
+
+resources:
+  - ../../base
+  - secret-store.yaml
+  - external-secret.yaml
+  - ingress.yaml
+
+# Replace this example registry and tag with the ECR image built by your pipeline.
+images:
+  - name: ai-agent-sample
+    newName: 753597210658.dkr.ecr.ap-northeast-1.amazonaws.com/ai-agent-sample
+    newTag: b7c760516e1f-2026
