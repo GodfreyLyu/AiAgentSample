@@ -95,9 +95,11 @@ filesystem, disable service-account token mounting unless it is required, and ap
 policy appropriate for the model endpoint.
 
 The repository includes a hardened Kustomize base plus Minikube and EKS overlays. The EKS
-overlay uses an ALB Ingress and External Secrets Operator, while GitHub Actions tests the
-service, builds an immutable ECR image, and performs a verified rolling deployment with AWS
-OIDC credentials. See the [Kubernetes deployment guide](deploy/README.md) for details.
+overlay connects the Service to a Terraform-managed private ALB through a `TargetGroupBinding`;
+CloudFront provides the public HTTPS endpoint. External Secrets Operator supplies runtime
+credentials, while GitHub Actions tests the service, builds an immutable ECR image, and performs
+a verified rolling deployment with AWS OIDC credentials. See the
+[Kubernetes deployment guide](deploy/README.md) for details.
 
 The current conversation store is in memory. It is suitable for local development and a
 single replica. Before scaling across EKS replicas, implement the existing session-store

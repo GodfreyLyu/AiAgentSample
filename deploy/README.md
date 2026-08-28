@@ -17,9 +17,9 @@ deploy/
     │   └── secrets.env.example
     └── eks/
         ├── external-secret.yaml
-        ├── ingress.yaml
         ├── kustomization.yaml
-        └── secret-store.yaml
+        ├── secret-store.yaml
+        └── target-group-binding.yaml
 ```
 
 ## Configuration and secrets
@@ -68,8 +68,24 @@ base and EKS overlay leave it disabled by default.
 ## EKS
 
 Apply the companion Terraform project first. It creates the application namespace, ECR
-repository, Secrets Manager secret, AWS Load Balancer Controller, and External Secrets
-Operator. Add a secret value shaped like this outside the repository:
+repository, Secrets Manager secret, AWS Load Balancer Controller, External Secrets Operator,
+internal ALB, target group, CloudFront VPC Origin, and CloudFront distribution.
+
+```mermaid
+flowchart LR
+  Client[Browser or API client] -->|HTTPS| CF[CloudFront default domain]
+  CF -->|Private VPC Origin| ALB[Internal ALB]
+  ALB --> TG[IP target group]
+  TG --> Pod[FastAPI Pod in EKS]
+  TGB[TargetGroupBinding] -. Registers ready Pod IP .-> TG
+  Service[Kubernetes Service] -. Selected by .-> TGB
+```
+
+`target-group-binding.yaml` is the control-plane bridge between Kubernetes and the existing target
+group. AWS Load Balancer Controller watches it and registers the Service's ready Pod IP. It does
+not create a second ALB.
+
+Add a secret value shaped like this outside the repository:
 
 ```json
 {
@@ -91,7 +107,25 @@ kubectl apply -k deploy/overlays/eks
 kubectl wait externalsecret/ai-agent-sample-secrets \
   --for=condition=Ready --timeout=120s --namespace=ai-agent-sample
 kubectl rollout status deployment/ai-agent-sample --namespace=ai-agent-sample
-kubectl get ingress ai-agent-sample --namespace=ai-agent-sample
+kubectl get targetgroupbinding ai-agent-sample --namespace=ai-agent-sample
+```
+
+The default binding expects the Terraform target group `ai-agent-sample-dev-tg`. To verify the
+complete route rather than only Kubernetes rollout health:
+
+```bash
+TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups \
+  --names ai-agent-sample-dev-tg \
+  --region ap-northeast-1 \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+
+aws elbv2 wait target-in-service \
+  --target-group-arn "$TARGET_GROUP_ARN" \
+  --region ap-northeast-1
+
+terraform -chdir=/path/to/aws-eks-paltform-sample/infrastructure/environments/dev \
+  output -raw application_url
 ```
 
 ### Automated ECR publishing
@@ -102,7 +136,8 @@ push to `main`, or a manual run from `main`, it then performs these jobs in orde
 1. `Build and push an image to ECR` obtains short-lived AWS credentials with GitHub OIDC,
    logs in to ECR, and uses Docker Buildx to build and push a `linux/amd64` image.
 2. `Deploy the published image to EKS` consumes the exact image URI produced by the publish
-   job, applies the EKS overlay, and verifies secret synchronization and rollout health.
+   job, applies the EKS overlay, verifies secret synchronization and rollout health, and waits
+   until the ALB reports the registered Pod target as healthy.
 
 The Terraform ECR repository uses immutable tags. Every workflow run therefore creates a
 unique, traceable tag in this form:
@@ -128,20 +163,23 @@ Then create the `AWS_DEPLOY_ROLE_ARN` Actions repository variable in
 terraform -chdir=infrastructure/environments/dev output -raw github_actions_deploy_role_arn
 ```
 
-No long-lived AWS access key is stored in GitHub. `AWS_REGION`, `ECR_REPOSITORY`, and the EKS
-deployment defaults are declared at the top of the workflow and must remain aligned with the
-Terraform environment.
+No long-lived AWS access key is stored in GitHub. `AWS_REGION`, `ECR_REPOSITORY`,
+`EKS_CLUSTER_NAME`, `KUBERNETES_NAMESPACE`, and `TARGET_GROUP_NAME` are declared at the top of the
+workflow and must remain aligned with the Terraform environment.
 
-The Terraform project combines an EKS namespace-scoped access policy for built-in Kubernetes
-resources with a namespace-scoped Role/RoleBinding for the `ExternalSecret` and `SecretStore`
-custom resources. The workflow checks these custom-resource permissions before applying any
-manifests and reports a targeted configuration error if the Terraform RBAC has not been applied.
-It does not require or receive cluster-admin access.
+The Terraform project maps the GitHub IAM role to a Kubernetes group and binds that group to one
+namespace-scoped Role. The Role covers only ConfigMaps, Services, Deployments, `ExternalSecret`,
+`SecretStore`, and `TargetGroupBinding`, with no delete verb and no permission to read Kubernetes
+Secrets. The workflow checks all of these permissions before applying manifests and reports a
+targeted configuration error if the Terraform RBAC has not been applied. It does not require or
+receive cluster-admin access.
 
-The example ALB is internet-facing and listens on HTTP so it can be used for a short-lived
-portfolio demo. Do not send a reusable bearer token over this endpoint. For a long-running or
-production service, bind an ACM certificate, add an HTTPS listener and redirect, restrict
-source CIDRs, and consider AWS WAF.
+The public endpoint is the default CloudFront HTTPS domain. The ALB is internal, and its port 80 is
+restricted to the AWS-managed CloudFront origin-facing prefix list. CloudFront-to-ALB traffic uses
+HTTP inside the private VPC Origin path. The Terraform README explains the additional private DNS,
+certificate, listener, and origin changes required if organizational policy requires encryption
+on every hop. CloudFront caching is disabled for this authenticated API, and VPC Origins do not
+support WebSockets or gRPC.
 
 The application currently stores sessions and workspaces inside one Pod, so the Deployment
 intentionally runs one replica. Add a shared session backend and persistent workspace design

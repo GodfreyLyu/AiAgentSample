@@ -1,0 +1,13 @@
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: ai-agent-sample
+  labels:
+    app.kubernetes.io/name: ai-agent-sample
+    app.kubernetes.io/component: api
+spec:
+  serviceRef:
+    name: ai-agent-sample
+    port: 8000
+  targetGroupName: ai-agent-sample-dev-tg
+  targetType: ip

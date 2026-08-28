@@ -14,6 +14,7 @@ env:
   ECR_REPOSITORY: ai-agent-sample
   EKS_CLUSTER_NAME: eks-workshop
   KUBERNETES_NAMESPACE: ai-agent-sample
+  TARGET_GROUP_NAME: ai-agent-sample-dev-tg
 
 jobs:
   quality:
@@ -196,13 +197,18 @@ jobs:
           }
 
           for resource in \
+            configmaps \
+            services \
+            deployments.apps \
             externalsecrets.external-secrets.io \
-            secretstores.external-secrets.io; do
+            secretstores.external-secrets.io \
+            targetgroupbindings.elbv2.k8s.aws; do
             require_permission get "$resource"
             require_permission create "$resource"
             require_permission patch "$resource"
           done
           require_permission watch externalsecrets.external-secrets.io
+          require_permission watch deployments.apps
 
       - name: Deploy and verify rollout
         env:
@@ -220,4 +226,12 @@ jobs:
           kubectl rollout status deployment/ai-agent-sample \
             --timeout=300s \
             --namespace "$KUBERNETES_NAMESPACE"
-          kubectl get ingress ai-agent-sample --namespace "$KUBERNETES_NAMESPACE"
+          kubectl get targetgroupbinding ai-agent-sample \
+            --namespace "$KUBERNETES_NAMESPACE"
+
+          TARGET_GROUP_ARN="$(aws elbv2 describe-target-groups \
+            --names "$TARGET_GROUP_NAME" \
+            --query 'TargetGroups[0].TargetGroupArn' \
+            --output text)"
+          aws elbv2 wait target-in-service \
+            --target-group-arn "$TARGET_GROUP_ARN"
