@@ -132,6 +132,12 @@ No long-lived AWS access key is stored in GitHub. `AWS_REGION`, `ECR_REPOSITORY`
 deployment defaults are declared at the top of the workflow and must remain aligned with the
 Terraform environment.
 
+The Terraform project combines an EKS namespace-scoped access policy for built-in Kubernetes
+resources with a namespace-scoped Role/RoleBinding for the `ExternalSecret` and `SecretStore`
+custom resources. The workflow checks these custom-resource permissions before applying any
+manifests and reports a targeted configuration error if the Terraform RBAC has not been applied.
+It does not require or receive cluster-admin access.
+
 The example ALB is internet-facing and listens on HTTP so it can be used for a short-lived
 portfolio demo. Do not send a reusable bearer token over this endpoint. For a long-running or
 production service, bind an ACM certificate, add an HTTPS listener and redirect, restrict

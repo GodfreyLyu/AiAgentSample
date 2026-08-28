@@ -180,6 +180,30 @@ jobs:
       - name: Configure Kubernetes access
         run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
 
+      - name: Verify Kubernetes deployment permissions
+        run: |
+          set -euo pipefail
+
+          require_permission() {
+            local verb="$1"
+            local resource="$2"
+            if ! kubectl auth can-i "$verb" "$resource" \
+              --namespace "$KUBERNETES_NAMESPACE" \
+              --quiet; then
+              echo "::error::GitHub Actions cannot ${verb} ${resource} in namespace ${KUBERNETES_NAMESPACE}. Apply the Terraform GitHub Actions RBAC configuration first."
+              exit 1
+            fi
+          }
+
+          for resource in \
+            externalsecrets.external-secrets.io \
+            secretstores.external-secrets.io; do
+            require_permission get "$resource"
+            require_permission create "$resource"
+            require_permission patch "$resource"
+          done
+          require_permission watch externalsecrets.external-secrets.io
+
       - name: Deploy and verify rollout
         env:
           IMAGE: ${{ needs.build-and-push-ecr.outputs.image }}
