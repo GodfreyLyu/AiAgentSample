@@ -124,7 +124,7 @@ aws elbv2 wait target-in-service \
   --target-group-arn "$TARGET_GROUP_ARN" \
   --region ap-northeast-1
 
-terraform -chdir=/path/to/aws-eks-paltform-sample/infrastructure/environments/dev \
+terraform -chdir=/path/to/aws-eks-platform-sample/infrastructure/environments/dev \
   output -raw application_url
 ```
 
